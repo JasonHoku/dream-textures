@@ -31,6 +31,8 @@ def render_depth_map(context, collection=None, invert=True, width=None, height=N
                 gpu.matrix.load_projection_matrix(projection_matrix)
                 
                 shader = gpu.shader.from_builtin(UNIFORM_COLOR)
+                # the color uniform is undefined until set; alpha is used as the geometry mask
+                shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
 
                 def render_mesh(mesh, transform):
                     mesh.transform(transform)
@@ -68,9 +70,19 @@ def render_depth_map(context, collection=None, invert=True, width=None, height=N
             depth = np.array(fb.read_depth(0, 0, width, height).to_list())
             if invert:
                 depth = 1 - depth
-                mask = np.array(fb.read_color(0, 0, width, height, 4, 0, 'UBYTE').to_list())[:, :, 3]
+                mask = np.array(fb.read_color(0, 0, width, height, 4, 0, 'UBYTE').to_list())[:, :, 3] > 0
                 depth *= mask
-            depth = np.interp(depth, [np.ma.masked_equal(depth, 0, copy=False).min(), depth.max()], [0, 1]).clip(0, 1)
+            masked = np.ma.masked_equal(depth, 0, copy=False)
+            lo, hi = masked.min(), depth.max()
+            if lo is np.ma.masked or hi <= 0:
+                # nothing was rendered into the depth buffer
+                depth = np.zeros_like(depth)
+            elif hi - lo < 1e-8:
+                # perfectly flat depth (e.g. a wall viewed head-on): min-max normalization would
+                # blow the whole map out to solid white; use a uniform mid-depth instead
+                depth = np.where(depth > 0, 0.5, 0.0)
+            else:
+                depth = np.interp(depth, [lo, hi], [0, 1]).clip(0, 1)
         gpu.state.depth_test_set('NONE')
         offscreen.free()
         result = depth

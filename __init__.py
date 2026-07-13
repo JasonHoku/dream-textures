@@ -112,6 +112,16 @@ if current_process().name != "__actor__":
             else:
                 self.dream_textures_project_prompt.control_nets.clear()
         bpy.types.Scene.dream_textures_project_use_control_net = BoolProperty(name="Use ControlNet", default=False, description="Use a depth ControlNet instead of a depth model", update=project_use_controlnet)
+        bpy.types.Scene.dream_textures_project_view_source = EnumProperty(
+            name="View",
+            items=(
+                ('camera', 'Camera', "Project from the active scene camera. Generates at exactly the Size settings; the camera frame defines the captured area"),
+                ('viewport_fit', 'Viewport (Fit Aspect)', "Project from the current viewport. The generation size is fitted to the viewport aspect ratio to avoid texture distortion (may change the pixel count)"),
+                ('viewport', 'Viewport (Exact Size)', "Project from the current viewport at exactly the Size settings (fastest, but textures may stretch if the aspect ratios differ)"),
+            ),
+            default='camera',
+            description="Which view the depth and texture projection are captured from"
+        )
 
         engine.register()
 

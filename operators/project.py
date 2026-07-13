@@ -129,11 +129,23 @@ def dream_texture_projection_panels():
                     layout.prop(prompt, "strength")
                 
                 col = layout.column()
-                
+
+                col.prop(context.scene, "dream_textures_project_view_source")
                 col.prop(context.scene, "dream_textures_project_use_control_net")
                 if context.scene.dream_textures_project_use_control_net and len(prompt.control_nets) > 0:
-                    col.prop(prompt.control_nets[0], "control_net", text="Depth ControlNet")
-                    col.prop(prompt.control_nets[0], "conditioning_scale", text="ControlNet Conditioning Scale")
+                    from ..preferences import InstallModel, _template_model_download_progress
+                    if len(prompt.get_backend().list_controlnet_models(context)) == 0:
+                        cn_box = col.box()
+                        cn_box.label(text="No ControlNet models installed.", icon="ERROR")
+                        cn_box.label(text="Download a depth ControlNet for SDXL models:")
+                        if not _template_model_download_progress(context, cn_box):
+                            install = cn_box.operator(InstallModel.bl_idname, text="Download controlnet-depth-sdxl-1.0-small", icon="IMPORT")
+                            install.model = "diffusers/controlnet-depth-sdxl-1.0-small"
+                            install.prefer_fp16_variant = True
+                            install.resume_download = True
+                    else:
+                        col.prop(prompt.control_nets[0], "control_net", text="Depth ControlNet")
+                        col.prop(prompt.control_nets[0], "conditioning_scale", text="ControlNet Conditioning Scale")
 
                 col.prop(context.scene, "dream_textures_project_bake")
                 if context.scene.dream_textures_project_bake:
@@ -285,29 +297,62 @@ class ProjectDreamTexture(bpy.types.Operator):
         if region_width is None or region_height is None:
             self.report({'ERROR'}, "Could not determine region size.")
 
-        # Render the viewport
+        # Resolve the projection view source, capture dimensions and generation size
+        view_source = context.scene.dream_textures_project_view_source
+        camera = context.scene.camera
+        if view_source == 'camera' and camera is None:
+            view_source = 'viewport_fit'
+            self.report({'WARNING'}, "No active scene camera — projecting from the viewport instead.")
+
+        base_size = context.scene.dream_textures_project_prompt.generate_args(context).size or (1024, 1024)
+
+        def fit_to_aspect(size, aspect):
+            """Fit a generation size to an aspect ratio, roughly preserving the pixel count."""
+            base_area = size[0] * size[1]
+            width = max(int(round((base_area * aspect) ** 0.5 / 64)) * 64, 512)
+            height = max(int(round((base_area / aspect) ** 0.5 / 64)) * 64, 512)
+            return (width, height)
+
+        if view_source == 'camera':
+            gen_size = base_size
+            capture_width, capture_height = gen_size
+            view_matrix = camera.matrix_world.inverted()
+            projection_matrix = camera.calc_matrix_camera(context.evaluated_depsgraph_get(), x=capture_width, y=capture_height)
+        else:
+            capture_width, capture_height = region_width, region_height
+            view_matrix = context.space_data.region_3d.view_matrix
+            projection_matrix = context.space_data.region_3d.window_matrix
+            gen_size = fit_to_aspect(base_size, region_width / region_height) if view_source == 'viewport_fit' else base_size
+
+        # Render the color capture
         if context.scene.dream_textures_project_framebuffer_arguments == 'color':
-            context.scene.dream_textures_info = "Rendering viewport color..."
+            context.scene.dream_textures_info = "Rendering color..."
             res_x, res_y = context.scene.render.resolution_x, context.scene.render.resolution_y
+            res_pct = context.scene.render.resolution_percentage
+            context.scene.render.resolution_percentage = 100
             view3d_spaces = []
-            for area in context.screen.areas:
-                if area.type == 'VIEW_3D':
-                    for region in area.regions:
-                        if region.type == 'WINDOW':
-                            context.scene.render.resolution_x, context.scene.render.resolution_y = region.width, region.height
-                    for space in area.spaces:
-                        if space.type == 'VIEW_3D':
-                            if space.overlay.show_overlays:
-                                view3d_spaces.append(space)
-                                space.overlay.show_overlays = False
+            if view_source == 'camera':
+                context.scene.render.resolution_x, context.scene.render.resolution_y = capture_width, capture_height
+            else:
+                for area in context.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        for region in area.regions:
+                            if region.type == 'WINDOW':
+                                context.scene.render.resolution_x, context.scene.render.resolution_y = region.width, region.height
+                        for space in area.spaces:
+                            if space.type == 'VIEW_3D':
+                                if space.overlay.show_overlays:
+                                    view3d_spaces.append(space)
+                                    space.overlay.show_overlays = False
             init_img_path = tempfile.NamedTemporaryFile(suffix='.png').name
             render_filepath, file_format = context.scene.render.filepath, context.scene.render.image_settings.file_format
             context.scene.render.image_settings.file_format = 'PNG'
             context.scene.render.filepath = init_img_path
-            bpy.ops.render.opengl(write_still=True, view_context=True)
+            bpy.ops.render.opengl(write_still=True, view_context=(view_source != 'camera'))
             for space in view3d_spaces:
                 space.overlay.show_overlays = True
             context.scene.render.resolution_x, context.scene.render.resolution_y = res_x, res_y
+            context.scene.render.resolution_percentage = res_pct
             context.scene.render.filepath, context.scene.render.image_settings.file_format = render_filepath, file_format
         else:
             init_img_path = None
@@ -333,6 +378,11 @@ class ProjectDreamTexture(bpy.types.Operator):
             mesh.verts.ensure_lookup_table()
             mesh.verts.index_update()
             def vert_to_uv(v):
+                if view_source == 'camera':
+                    co = projection_matrix @ view_matrix @ (obj.matrix_world @ v.co).to_4d()
+                    if co.w <= 0:
+                        return None
+                    return ((co.x / co.w + 1) / 2, (co.y / co.w + 1) / 2)
                 screen_space = view3d_utils.location_3d_to_region_2d(context.region, context.space_data.region_3d, obj.matrix_world @ v.co)
                 if screen_space is None:
                     return None
@@ -356,18 +406,31 @@ class ProjectDreamTexture(bpy.types.Operator):
                     face.material_index = material_index
             bmesh.update_edit_mesh(obj.data)
 
-        context.scene.dream_textures_info = "Rendering viewport depth..."
+        context.scene.dream_textures_info = "Rendering depth..."
 
         depth = np.flipud(render_depth_map(
             context.evaluated_depsgraph_get(),
             collection=None,
-            width=region_width,
-            height=region_height,
-            matrix=context.space_data.region_3d.view_matrix,
-            projection_matrix=context.space_data.region_3d.window_matrix,
+            width=capture_width,
+            height=capture_height,
+            matrix=view_matrix,
+            projection_matrix=projection_matrix,
             main_thread=True
         ))
-        
+
+        # Save the exact model inputs as image datablocks so they can be inspected in the Image Editor.
+        image_utils.np_to_bpy(image_utils.rgba(depth), "Projection Depth Map", bpy.data.images.get("Projection Depth Map"))
+
+        if depth.max() <= 0:
+            context.scene.dream_textures_info = ""
+            if view_source == 'camera':
+                self.report({'ERROR'}, "Depth capture is empty — the active camera does not see the selected geometry. Aim the camera at your mesh (Ctrl+Numpad0 snaps it to your view), or set View to a Viewport mode.")
+            else:
+                self.report({'ERROR'}, "Depth capture is empty — no geometry was rendered from this view. Check the 'Projection Depth Map' image.")
+            return {'CANCELLED'}
+        elif np.ptp(depth[depth > 0]) < 1e-6:
+            self.report({'WARNING'}, "Depth is uniform — the surface is flat and viewed head-on, so a depth ControlNet adds little. Angle the view slightly or use 'Depth and Color' input.")
+
         texture = None
 
         def step_callback(progress: List[api.GenerationResult]) -> bool:
@@ -419,13 +482,20 @@ class ProjectDreamTexture(bpy.types.Operator):
         context.scene.dream_textures_info = "Starting..."
         CancelGenerator.should_continue = True # reset global cancellation state
         image_data = bpy.data.images.load(init_img_path) if init_img_path is not None else None
+        if image_data is not None:
+            existing_color = bpy.data.images.get("Projection Color")
+            if existing_color is not None:
+                bpy.data.images.remove(existing_color)
+            image_data.name = "Projection Color"
         image = np.asarray(image_data.pixels).reshape((*depth.shape, image_data.channels)) if image_data is not None else None
         if context.scene.dream_textures_project_use_control_net:
             generated_args: api.GenerationArguments = context.scene.dream_textures_project_prompt.generate_args(context, init_image=image, control_images=[image_utils.rgba(depth)])
+            generated_args.size = gen_size
             backend.generate(generated_args, step_callback=step_callback, callback=callback)
         else:
             generated_args: api.GenerationArguments = context.scene.dream_textures_project_prompt.generate_args(context)
             generated_args.task = api.DepthToImage(depth, image, context.scene.dream_textures_project_prompt.strength)
+            generated_args.size = gen_size
             backend.generate(generated_args, step_callback=step_callback, callback=callback)
 
         for area in context.screen.areas:
