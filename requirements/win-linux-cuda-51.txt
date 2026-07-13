@@ -1,0 +1,22 @@
+# Blender 5.1+ (Python 3.13) — modern CUDA stack
+# torch cu130 supports Turing (sm_75) and newer; RTX 20xx+
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.13.0
+
+diffusers==0.39.0
+transformers
+accelerate
+huggingface_hub
+safetensors
+peft            # LoRA support in diffusers
+sentencepiece   # T5 tokenizer (SD3/Flux/modern DiT models)
+protobuf        # T5 tokenizer
+gguf            # GGUF quantized model loading
+invisible-watermark
+controlnet-aux
+
+scipy # LMSDiscreteScheduler
+
+opencolorio # color management
+
+matplotlib # OpenPose

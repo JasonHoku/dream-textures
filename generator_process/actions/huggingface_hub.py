@@ -33,7 +33,9 @@ def hf_list_models(
     token: str,
 ) -> list[Model]:
     from huggingface_hub import HfApi
-    
+
+    token = token or None  # huggingface_hub 1.x rejects empty-string tokens
+
     if hasattr(self, "huggingface_hub_api"):
         api: HfApi = self.huggingface_hub_api
     else:
@@ -53,7 +55,6 @@ def hf_list_models(
 
 def hf_list_installed_models(self) -> list[Model]:
     from huggingface_hub.constants import HF_HUB_CACHE
-    from diffusers.utils.hub_utils import old_diffusers_cache
 
     def list_dir(cache_dir):
         if not os.path.exists(cache_dir):
@@ -69,7 +70,9 @@ def hf_list_installed_models(self) -> list[Model]:
                 with open(config, 'r') as f:
                     config_dict = json.load(f)
                     if '_class_name' in config_dict and config_dict['_class_name'] == 'ControlNetModel':
-                        return ModelType.CONTROL_NET
+                        # don't list models whose weights haven't finished downloading
+                        has_weights = any(name.startswith('diffusion_pytorch_model') for name in os.listdir(snapshot_folder))
+                        return ModelType.CONTROL_NET if has_weights else ModelType.UNKNOWN
                     else:
                         return ModelType.UNKNOWN
             else:
@@ -109,12 +112,8 @@ def hf_list_installed_models(self) -> list[Model]:
             )
             if model is not None
         ]
-    new_cache_list = list_dir(HF_HUB_CACHE)
-    model_ids = [os.path.basename(m.id) for m in new_cache_list]
-    for model in list_dir(old_diffusers_cache):
-        if os.path.basename(model.id) not in model_ids:
-            new_cache_list.append(model)
-    return new_cache_list
+    # legacy pre-hub diffusers cache (diffusers.utils.hub_utils.old_diffusers_cache) was removed in newer diffusers
+    return list_dir(HF_HUB_CACHE)
 
 @dataclass
 class DownloadStatus:
@@ -140,9 +139,14 @@ class DownloadStatus:
             def progress(self):
                 nonlocal progresses
                 progresses.add(self)
+                if not self.total:
+                    # newer huggingface_hub creates bars with total=None before size is known
+                    return
                 ratio = self.n / self.total
                 count = 0
                 for tqdm in progresses:
+                    if not tqdm.total:
+                        continue
                     r = tqdm.n / tqdm.total
                     if r == 1:
                         continue
@@ -161,8 +165,9 @@ def hf_snapshot_download(
     resume_download=True
 ):
     from huggingface_hub import snapshot_download, repo_info
-    from diffusers import StableDiffusionPipeline
-    from diffusers.pipelines.pipeline_utils import variant_compatible_siblings
+    from diffusers import DiffusionPipeline
+
+    token = token or None  # huggingface_hub 1.x rejects empty-string tokens
 
     future = Future()
     yield future
@@ -172,14 +177,20 @@ def hf_snapshot_download(
     files = [file.rfilename for file in info.siblings]
 
     if "model_index.json" in files:
-        # check if the variant files are available before trying to download them
-        _, variant_files = variant_compatible_siblings(files, variant=variant)
-        StableDiffusionPipeline.download(
-            model,
-            token=token,
-            variant=variant if len(variant_files) > 0 else None,
-            resume_download=resume_download,
-        )
+        try:
+            DiffusionPipeline.download(
+                model,
+                token=token,
+                variant=variant,
+            )
+        except ValueError:
+            if variant is None:
+                raise
+            # variant files unavailable, fall back to the default weights
+            DiffusionPipeline.download(
+                model,
+                token=token,
+            )
     elif "config.json" in files:
         # individual model, such as controlnet or vae
 
@@ -197,7 +208,6 @@ def hf_snapshot_download(
         snapshot_download(
             model,
             token=token,
-            resume_download=resume_download,
             allow_patterns=["config.json", weights]
         )
     else:

@@ -1,6 +1,7 @@
 from multiprocessing import Queue, Lock, current_process, get_context
 import multiprocessing.synchronize
 import enum
+import queue
 import traceback
 import threading
 from typing import Type, TypeVar, Generator
@@ -154,9 +155,10 @@ class Actor:
                 self.process = get_context('spawn').Process(target=_start_backend, args=(self.__class__, self._message_queue, self._response_queue), name="__actor__", daemon=True)
                 main_module = sys.modules["__main__"]
                 main_file = getattr(main_module, "__file__", None)
-                if main_file == "<blender string>":
-                    # Fix for Blender 4.0 not being able to start a subprocess
-                    # while previously installed addons are being initialized.
+                if main_file is not None:
+                    # Prevent multiprocessing from re-running Blender's __main__ in the child process.
+                    # Covers "<blender string>" (Blender 4.0 addon init) and real paths from
+                    # `blender --python script.py` — either would make the child import bpy and crash.
                     try:
                         main_module.__file__ = None
                         self.process.start()
@@ -240,7 +242,25 @@ class Actor:
             except (AttributeError, KeyError):
                 pass
             self._response_queue.put(TracedError(e, trace))
+        self._log_vram_stats()
         self._response_queue.put(Message.END)
+
+    def _log_vram_stats(self):
+        """Print peak VRAM after each request so slowdowns from driver sysmem-fallback are visible."""
+        try:
+            torch = sys.modules.get("torch")
+            if torch is None or not torch.cuda.is_available():
+                return
+            peak = torch.cuda.max_memory_allocated()
+            if peak <= 0:
+                return
+            free, total = torch.cuda.mem_get_info()
+            print(f"[dream_textures] VRAM peak {peak/1e9:.2f}GB | now free {free/1e9:.2f}GB of {total/1e9:.2f}GB", flush=True)
+            if peak > total * 0.92:
+                print("[dream_textures] VRAM was at/over capacity — the NVIDIA driver likely spilled to system RAM, which slows generation ~3-5x. Enable Speed Optimizations > CPU Offload: Model, or reduce the generation size.", flush=True)
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
 
     def _send(self, name):
         def _send(*args, _block=False, **kwargs):
@@ -254,7 +274,20 @@ class Actor:
                 while not future.done:
                     if future.cancelled:
                         self._message_queue.put(Message.CANCEL)
-                    response = self._response_queue.get()
+                    try:
+                        response = self._response_queue.get(timeout=1)
+                    except queue.Empty:
+                        if not self.process.is_alive():
+                            # The backend process died (e.g. crashed while importing dependencies).
+                            # Without this check Blender would wait on the queue forever.
+                            future.set_exception(RuntimeError(
+                                f"The generator process exited unexpectedly with code {self.process.exitcode}. "
+                                "Check the system console for details (Window > Toggle System Console). "
+                                "This often means the installed dependencies do not match Blender's Python version."
+                            ))
+                            future.set_done()
+                            break
+                        continue
                     if response == Message.END:
                         future.set_done()
                     elif isinstance(response, TracedError):

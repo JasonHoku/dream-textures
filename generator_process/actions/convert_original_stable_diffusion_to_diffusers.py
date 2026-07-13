@@ -13,7 +13,6 @@ def convert_original_stable_diffusion_to_diffusers(
 ) -> str:
     import torch
     from huggingface_hub.constants import HF_HUB_CACHE
-    from diffusers.pipelines.stable_diffusion.convert_from_ckpt import download_from_original_stable_diffusion_ckpt, download_controlnet_from_original_ckpt
 
     future = Future()
     yield future
@@ -36,22 +35,24 @@ def convert_original_stable_diffusion_to_diffusers(
             return old_save_pretrained(save_directory, *args, **kwargs)
         model.save_pretrained = save_pretrained.__get__(model)
 
+    original_config_kwargs = {}
+    if model_config.original_config is not None:
+        original_config_kwargs["original_config"] = model_config.original_config
+
     if model_config in [ModelConfig.CONTROL_NET_1_5, ModelConfig.CONTROL_NET_2_1]:
-        pipe = download_controlnet_from_original_ckpt(
+        from diffusers import ControlNetModel
+        pipe = ControlNetModel.from_single_file(
             checkpoint_path,
-            original_config_file=model_config.original_config,
-            from_safetensors=checkpoint_path.endswith(".safetensors"),
+            **original_config_kwargs,
         )
         if half_precision:
             pipe.to(dtype=torch.float16)
         index = 1
         hook_save_pretrained(pipe, 1, 2)
     else:
-        pipe = download_from_original_stable_diffusion_ckpt(
+        pipe = model_config.pipeline.from_single_file(
             checkpoint_path,
-            original_config_file=model_config.original_config,
-            from_safetensors=checkpoint_path.endswith(".safetensors"),
-            pipeline_class=model_config.pipeline
+            **original_config_kwargs,
         )
         if half_precision:
             pipe.to(torch_dtype=torch.float16)

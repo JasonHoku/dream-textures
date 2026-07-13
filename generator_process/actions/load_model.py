@@ -79,7 +79,7 @@ def _load_controlnet_model(cache, model, half_precision):
 
     weights = next((name for name in weights_names if os.path.isfile(os.path.join(revisions["main"], name))), None)
     if weights is None:
-        raise FileNotFoundError(f"Can't find appropriate weights in {model}")
+        raise FileNotFoundError(f"Can't find appropriate weights in {model}. If it was just downloaded, the download may be incomplete or still in progress — wait for it to finish and try again.")
     half_weights = weights in fp16_weights
     if not half_precision and half_weights:
         logger.warning(f"Can't load fp32 weights for model {model}, attempting to load fp16 instead")
@@ -92,8 +92,6 @@ def _load_controlnet_model(cache, model, half_precision):
 
 
 def _load_checkpoint(model_class, checkpoint, dtype, **kwargs):
-    from diffusers.pipelines.stable_diffusion.convert_from_ckpt import download_from_original_stable_diffusion_ckpt
-
     if isinstance(checkpoint, Checkpoint):
         model = checkpoint.path
         config = checkpoint.config
@@ -105,30 +103,31 @@ def _load_checkpoint(model_class, checkpoint, dtype, **kwargs):
         raise FileNotFoundError(f"Can't locate {model}")
 
     config_file = config.original_config if isinstance(config, ModelConfig) else config
+    single_file_kwargs = dict(torch_dtype=dtype, **kwargs)
+    if config_file is not None:
+        single_file_kwargs["original_config"] = config_file
     if hasattr(model_class, "from_single_file"):
         return model_class.from_single_file(
             model,
-            torch_dtype=dtype,
-            original_config_file=config_file,
-            **kwargs
+            **single_file_kwargs
         )
     else:
         # auto pipelines won't support from_single_file() https://github.com/huggingface/diffusers/issues/4367
-        from_pipe = hasattr(model_class, "from_pipe")
-        if from_pipe:
-            pipeline_class = config.pipeline if isinstance(config, ModelConfig) else None
-        else:
-            pipeline_class = model_class
-        pipe = download_from_original_stable_diffusion_ckpt(
+        # load with a concrete pipeline class, then convert with from_pipe()
+        pipeline_class = config.pipeline if isinstance(config, ModelConfig) and config != ModelConfig.AUTO_DETECT else None
+        if pipeline_class is None:
+            import diffusers
+            from ...model_scanner import infer_single_file_pipeline_class
+            pipeline_class = getattr(diffusers, infer_single_file_pipeline_class(model))
+        # component kwargs like controlnet belong to from_pipe, not the base pipeline
+        base_kwargs = {"torch_dtype": dtype}
+        if config_file is not None:
+            base_kwargs["original_config"] = config_file
+        pipe = pipeline_class.from_single_file(
             model,
-            from_safetensors=model.endswith(".safetensors"),
-            original_config_file=config_file,
-            pipeline_class=pipeline_class,
-            controlnet=kwargs.get("controlnet", None)
+            **base_kwargs
         )
-        if dtype is not None:
-            pipe.to(torch_dtype=dtype)
-        if from_pipe:
+        if hasattr(model_class, "from_pipe"):
             pipe = model_class.from_pipe(pipe, **kwargs)
         return pipe
 
@@ -139,6 +138,17 @@ def _convert_pipe(cache, model, pipe, model_class, half_precision, scheduler, **
         'DreamTexturesDepth2ImgPipeline',
         'StableDiffusionUpscalePipeline',
     }:
+        if getattr(pipe, "final_offload_hook", None) is not None:
+            # A pipeline with accelerate cpu-offload hooks can't be safely recomposed by
+            # from_pipe: swapped-in components (e.g. a different ControlNet) end up outside
+            # the offload chain with mismatched device/dtype. Strip the hooks here and let
+            # Optimizations.apply() reinstall them over the new component set.
+            import torch
+            from accelerate.hooks import remove_hook_from_module
+            for component in pipe.components.values():
+                if isinstance(component, torch.nn.Module):
+                    remove_hook_from_module(component, recurse=True)
+            pipe.final_offload_hook = None
         pipe = model_class.from_pipe(pipe, **kwargs)
     scheduler.create(pipe)
     return pipe
@@ -185,7 +195,7 @@ def _load_pipeline(cache, model, model_class, half_precision, scheduler, **kwarg
 def load_model(self, model_class, model, optimizations, scheduler, controlnet=None, sdxl_refiner_model=None, **kwargs):
     import torch
     from diffusers import StableDiffusionXLPipeline, AutoPipelineForImage2Image
-    from diffusers.pipelines.controlnet.multicontrolnet import MultiControlNetModel
+    from diffusers.models.controlnets.multicontrolnet import MultiControlNetModel
 
     device = self.choose_device(optimizations)
     half_precision = optimizations.can_use_half(device)
@@ -207,7 +217,7 @@ def load_model(self, model_class, model, optimizations, scheduler, controlnet=No
         clear_models = set(model_cache).difference(expected_models)
         for name in clear_models:
             model_cache.pop(name)
-        for pipe in model_cache.items():
+        for pipe in model_cache.values():
             if isinstance(getattr(pipe, "controlnet", None), MultiControlNetModel):
                 # make sure no longer needed ControlNetModels are cleared
                 # the MultiControlNetModel container will be remade

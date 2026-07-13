@@ -16,7 +16,9 @@ class Future:
     _done_event: threading.Event
     done: bool = False
     cancelled: bool = False
-    check_cancelled: Callable[[], bool] = lambda: False
+    # the class-level default binds `self` when accessed on an instance; the actor replaces it
+    # with a plain function stored as an instance attribute (which does not bind `self`)
+    check_cancelled: Callable[[], bool] = lambda self: False
     call_done_on_exception: bool = True
 
     def __init__(self):
