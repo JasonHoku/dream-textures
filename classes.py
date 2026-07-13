@@ -12,7 +12,8 @@ from .property_groups.seamless_result import SeamlessResult
 from .ui.panels import dream_texture, history, upscaling, render_properties
 from .preferences import OpenURL, StableDiffusionPreferences,\
     ImportWeights, Model, ModelSearch, InstallModel, PREFERENCES_UL_ModelList,\
-    CheckpointGroup, LinkCheckpoint, UnlinkCheckpoint, PREFERENCES_UL_CheckpointList
+    CheckpointGroup, LinkCheckpoint, UnlinkCheckpoint, PREFERENCES_UL_CheckpointList,\
+    ModelFolder, AddModelFolder, RemoveModelFolder, RescanModelFolders, PREFERENCES_UL_ModelFolderList
 
 from .ui.presets import DREAM_PT_AdvancedPresets, DREAM_MT_AdvancedPresets, AddAdvancedPreset, RestoreDefaultPresets
 
@@ -75,5 +76,10 @@ PREFERENCE_CLASSES = (
     LinkCheckpoint,
     UnlinkCheckpoint,
     PREFERENCES_UL_CheckpointList,
+    ModelFolder,
+    AddModelFolder,
+    RemoveModelFolder,
+    RescanModelFolders,
+    PREFERENCES_UL_ModelFolderList,
     StableDiffusionPreferences,
 )

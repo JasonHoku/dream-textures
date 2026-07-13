@@ -13,6 +13,7 @@ from .ui.presets import RestoreDefaultPresets, default_presets_missing
 from .generator_process import Generator
 from .generator_process.actions.huggingface_hub import DownloadStatus, Model as HubModel
 from .generator_process.models import Checkpoint, ModelConfig, ModelType
+from .model_scanner import scan_model_folders
 
 is_downloading = False
 
@@ -103,7 +104,7 @@ def set_model_list(model_list: str, models: list):
     for model in models:
         m = getattr(bpy.context.preferences.addons[__package__].preferences, model_list).add()
         m.model = model.id
-        m.model_base = os.path.basename(model.id)
+        m.model_base = getattr(model, 'display_name', None) or os.path.basename(model.id)
         m.downloads = model.downloads
         m.likes = model.likes
         try:
@@ -153,6 +154,17 @@ def fetch_installed_models(blocking=True):
             model_list.append(model)
             checkpoint_lookup._checkpoints[os.path.basename(path)] = Checkpoint(path, config)
             model_lookup._models[os.path.basename(path)] = model
+
+        # models discovered in user-registered folders (e.g. ComfyUI model directories)
+        for scanned in scan_model_folders([folder.path for folder in pref.model_folders]):
+            if scanned.display in checkpoint_lookup._checkpoints or scanned.path in {c.path for c in checkpoint_lookup._checkpoints.values()}:
+                # explicitly linked checkpoints (with a user-chosen config) take precedence
+                continue
+            model = HubModel(scanned.path, "", [], -1, -1, scanned.model_type)
+            model.display_name = scanned.display
+            model_list.append(model)
+            checkpoint_lookup._checkpoints[scanned.display] = Checkpoint(scanned.path, ModelConfig.AUTO_DETECT)
+            model_lookup._models[scanned.display] = model
 
         set_model_list('installed_models', model_list)
 
@@ -318,6 +330,70 @@ class PREFERENCES_UL_CheckpointList(bpy.types.UIList):
         unlink = layout.operator(UnlinkCheckpoint.bl_idname, text="", icon="TRASH")
         unlink.path = item.path
 
+class ModelFolder(bpy.types.PropertyGroup):
+    bl_label = "Model Folder"
+    bl_idname = "dream_textures.model_folder"
+
+    path: bpy.props.StringProperty(name="Path")
+
+class AddModelFolder(bpy.types.Operator):
+    bl_idname = "dream_textures.add_model_folder"
+    bl_label = "Add Model Folder"
+    bl_description = ("Register a folder of checkpoints (scanned recursively), such as a ComfyUI models directory")
+
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+    filter_folder: bpy.props.BoolProperty(default=True, options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        pref = context.preferences.addons[__package__].preferences
+        path = os.path.abspath(bpy.path.abspath(self.directory))
+        if not os.path.isdir(path):
+            self.report({"ERROR"}, f"{path} is not a folder")
+            return {"CANCELLED"}
+        if any(os.path.normcase(os.path.abspath(folder.path)) == os.path.normcase(path) for folder in pref.model_folders):
+            self.report({"INFO"}, f"{path} is already registered")
+            return {"CANCELLED"}
+        folder = pref.model_folders.add()
+        folder.path = path
+        fetch_installed_models()
+        return {"FINISHED"}
+
+class RemoveModelFolder(bpy.types.Operator):
+    bl_idname = "dream_textures.remove_model_folder"
+    bl_label = "Remove Model Folder"
+
+    path: bpy.props.StringProperty()
+    def execute(self, context):
+        pref = context.preferences.addons[__package__].preferences
+        index = next((i for i, folder in enumerate(pref.model_folders) if folder.path == self.path), -1)
+        if index != -1:
+            pref.model_folders.remove(index)
+        fetch_installed_models()
+        return {"FINISHED"}
+
+class RescanModelFolders(bpy.types.Operator):
+    bl_idname = "dream_textures.rescan_model_folders"
+    bl_label = "Rescan Model Folders"
+    bl_description = ("Rescan all registered model folders for new or removed checkpoint files")
+
+    def execute(self, context):
+        fetch_installed_models()
+        pref = context.preferences.addons[__package__].preferences
+        self.report({"INFO"}, f"Model list refreshed ({len(pref.installed_models)} models)")
+        return {"FINISHED"}
+
+class PREFERENCES_UL_ModelFolderList(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
+        layout.label(text=item.path, icon="FILE_FOLDER")
+        open_folder = layout.operator(InstallModel.bl_idname, text="", icon="WINDOW")
+        open_folder.model = item.path
+        remove = layout.operator(RemoveModelFolder.bl_idname, text="", icon="TRASH")
+        remove.path = item.path
+
 class StableDiffusionPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -335,6 +411,9 @@ class StableDiffusionPreferences(bpy.types.AddonPreferences):
 
     linked_checkpoints: CollectionProperty(type=CheckpointGroup)
     active_linked_checkpoint: bpy.props.IntProperty(name="Active Checkpoint", default=0)
+
+    model_folders: CollectionProperty(type=ModelFolder)
+    active_model_folder: bpy.props.IntProperty(name="Active Model Folder", default=0)
 
     download_file: bpy.props.StringProperty(name="")
     download_progress: bpy.props.IntProperty(name="", min=0, max=100, subtype="PERCENTAGE", update=_update_ui)
@@ -406,6 +485,16 @@ class StableDiffusionPreferences(bpy.types.AddonPreferences):
             import_weights.prefer_fp16_variant = self.prefer_fp16_variant
             layout.template_list(PREFERENCES_UL_CheckpointList.__name__, "dream_textures_linked_checkpoints", self, "linked_checkpoints", self, "active_linked_checkpoint")
             layout.operator(LinkCheckpoint.bl_idname, icon='FOLDER_REDIRECT')
+
+            folders_box = layout.box()
+            folders_box.label(text="Model Folders", icon="FILE_FOLDER")
+            folders_box.label(text="Register folders of checkpoints (scanned recursively), such as your ComfyUI models directory.")
+            folders_box.label(text="Model types are detected automatically. LoRAs, VAEs and embeddings are skipped.")
+            if len(self.model_folders) > 0:
+                folders_box.template_list(PREFERENCES_UL_ModelFolderList.__name__, "dream_textures_model_folders", self, "model_folders", self, "active_model_folder")
+            folders_row = folders_box.row()
+            folders_row.operator(AddModelFolder.bl_idname, icon='ADD')
+            folders_row.operator(RescanModelFolders.bl_idname, icon='FILE_REFRESH')
 
             if weights_installed or len(self.dream_studio_key) > 0:
                 complete_box = layout.box()
