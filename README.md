@@ -26,13 +26,14 @@ This fork modernizes dream-textures for current Blender and the current ML stack
   CPU offload, download progress crashes, and more
 
 **Installing this fork:** download the build matching your Blender version from the
-[latest Package Release run](https://github.com/JasonHoku/dream-textures/actions/workflows/package-release.yml)
-(open the newest green run and grab the artifact):
+[releases page](https://github.com/JasonHoku/dream-textures/releases), extract the `.7z`
+(Windows Explorer can extract these natively), then install the `.zip` inside it through
+Blender's `Edit > Preferences > Add-ons > Install`:
 
-| Artifact | Blender version | Python |
+| Download | Blender version | Python |
 |---|---|---|
-| `dream_textures-windows-cuda-blender-5-1` | Blender 5.1+ | 3.13 |
-| `dream_textures-windows-cuda-blender-4-2` | Blender 4.2–4.5 LTS | 3.11 |
+| `dream_textures-windows-cuda-blender-5-1.7z` | Blender 5.1+ | 3.13 |
+| `dream_textures-windows-cuda-blender-4-2.7z` | Blender 4.2–4.5 LTS | 3.11 |
 
 > The build must match your Blender version — the bundled dependencies are compiled per
 > Python version, and Blender changes its Python between series. Installing a mismatched

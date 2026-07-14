@@ -3,7 +3,12 @@ on:
   push:
     branches:
       - "releases/**"
+    tags:
+      - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   package-release:
@@ -44,9 +49,22 @@ jobs:
           type: zip
           filename: dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.zip
           exclusions: '*.git*'
+      - name: Compress with 7z
+        # LZMA fits the CUDA build under GitHub's 2GB release asset limit; users extract
+        # the .7z to get the installable .zip (same scheme as upstream releases)
+        shell: bash
+        run: '7z a -t7z -mx=7 dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.7z dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.zip'
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}
-          path: dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.zip
+          path: dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.7z
           compression-level: 0
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes || true
+          gh release upload "$GITHUB_REF_NAME" "dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.7z" --repo "$GITHUB_REPOSITORY" --clobber
