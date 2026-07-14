@@ -11,6 +11,36 @@
 * Re-style animations with the Cycles render pass
 * Run the models on your machine to iterate without slowdowns from a service
 
+# About this fork
+
+This fork modernizes dream-textures for current Blender and the current ML stack:
+
+* **Blender 5.1+ support** (Python 3.13) with torch 2.13 (CUDA 13) and diffusers 0.39
+* **Model folder discovery** — register your existing checkpoint folders (e.g. a ComfyUI
+  models directory) in the addon preferences; models are detected automatically and appear
+  in the model dropdown, no re-downloading or conversion
+* **Texture projection overhaul** — project from the scene camera or viewport, inspectable
+  "Projection Depth Map"/"Projection Color" inputs, depth ControlNet support with one-click
+  download, and fixes for distorted UVs and blank depth maps
+* Many stability fixes: no more freeze when dependencies mismatch, ControlNet switching with
+  CPU offload, download progress crashes, and more
+
+**Installing this fork:** download the build matching your Blender version from the
+[latest Package Release run](https://github.com/JasonHoku/dream-textures/actions/workflows/package-release.yml)
+(open the newest green run and grab the artifact):
+
+| Artifact | Blender version | Python |
+|---|---|---|
+| `dream_textures-windows-cuda-blender-5-1` | Blender 5.1+ | 3.13 |
+| `dream_textures-windows-cuda-blender-4-2` | Blender 4.2–4.5 LTS | 3.11 |
+
+> The build must match your Blender version — the bundled dependencies are compiled per
+> Python version, and Blender changes its Python between series. Installing a mismatched
+> zip is what causes the classic `bad magic number in 'transformers'` freeze.
+
+The roadmap for new model families (Z-Image, Flux, quantized checkpoints) is in
+[docs/MODERNIZATION-2026.md](docs/MODERNIZATION-2026.md).
+
 # Installation
 Download the [latest release](https://github.com/carson-katri/dream-textures/releases/latest) and follow the instructions there to get up and running.
 
