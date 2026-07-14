@@ -47,7 +47,9 @@ jobs:
         # plain 7z (preinstalled on runners) instead of a third-party action:
         # this workflow holds contents:write, so keep external code out of it
         shell: bash
-        run: '7z a -tzip dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.zip dream_textures "-xr!*.git*"'
+        # -mx=0: store the inner zip uncompressed so the outer 7z/LZMA pass does all the
+        # compressing — recompressing deflated data gains almost nothing
+        run: '7z a -tzip -mx=0 dream_textures-${{ matrix.platform.filename }}${{ matrix.version.filename_suffix }}.zip dream_textures "-xr!*.git*"'
       - name: Compress with 7z
         # LZMA fits the CUDA build under GitHub's 2GB release asset limit; users extract
         # the .7z to get the installable .zip (same scheme as upstream releases)
